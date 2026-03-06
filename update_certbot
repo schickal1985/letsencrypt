@@ -1,5 +1,6 @@
 #!/bin/bash
 # Hauptskript zum Erneuern/Holen von Let's Encrypt Zertifikaten (PARALLELE VERSION)
+# Version: 0.9
 
 # Prüfe auf Root Rechte
 if [ "$EUID" -ne 0 ]; then

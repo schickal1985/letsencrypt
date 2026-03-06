@@ -1,4 +1,5 @@
 #!/bin/bash
+# Version: 0.9
 # Dieses Skript wird vom głównen `update_certbot` Wrapper aufgerufen, 
 # SOBALD Certbot alle Keys gesammelt hat und auf das finale [ENTER] wartet.
 

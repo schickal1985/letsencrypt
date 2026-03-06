@@ -1,4 +1,5 @@
 #!/bin/bash
+# Version: 0.9
 exec > /dev/tty 2>&1
 
 echo -e "\e[1;33m>>> SCHLÜSSEL GEFORDERT <<<\e[0m"
