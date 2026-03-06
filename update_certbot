@@ -1,6 +1,6 @@
 #!/bin/bash
-# Hauptskript zum Erneuern/Holen von Let's Encrypt Zertifikaten (PARALLELE VERSION)
-# Version: 0.9
+# Hauptskript zum Erneuern/Holen von Let's Encrypt Zertifikaten (SEQUENTIELLE VERSION / LÖSUNG C)
+# Version: 1.0
 
 # Prüfe auf Root Rechte
 if [ "$EUID" -ne 0 ]; then
@@ -81,31 +81,34 @@ while true; do
     fi
 done
 
-# Argumente für Certbot zusammenbauen
-CERTBOT_ARGS="certonly --manual --cert-name $FIRST_DOMAIN --expand"
+
+# ========================================================================
+# SCHLEIFE: Zertifikate sequentiell nacheinander abarbeiten
+# ========================================================================
 for i in "${!DOMAINS[@]}"; do
     DOM="${DOMAINS[$i]}"
     WC="${WILDCARDS[$i]}"
     
+    echo -e "\n\e[1;36m========================================================\e[0m"
+    echo -e "\e[1;36m    Beginne isolierten Durchlauf für: $DOM    \e[0m"
+    echo -e "\e[1;36m========================================================\e[0m\n"
+
+    # Argumente für exakt DIESE eine Domain bauen
+    CERTBOT_ARGS="certonly --manual --cert-name $DOM --expand"
     if [ "$WC" -eq 1 ]; then
         CERTBOT_ARGS="$CERTBOT_ARGS -d *.$DOM -d $DOM"
     else
         CERTBOT_ARGS="$CERTBOT_ARGS -d $DOM"
     fi
-done
-CERTBOT_ARGS="$CERTBOT_ARGS --agree-tos --preferred-challenges dns-01 --server https://acme-v02.api.letsencrypt.org/directory --register-unsafely-without-email --rsa-key-size 4096 --manual-auth-hook $HOOK_SCRIPT --debug-challenges"
-export CERTBOT_ARGS
+    CERTBOT_ARGS="$CERTBOT_ARGS --agree-tos --preferred-challenges dns-01 --server https://acme-v02.api.letsencrypt.org/directory --register-unsafely-without-email --rsa-key-size 4096 --manual-auth-hook $HOOK_SCRIPT --debug-challenges"
+    export CERTBOT_ARGS
 
-# Temp-Datei für die gesammelten Keys vorbereiten (Leeren/Erstellen)
-rm -f /tmp/certbot_check_list.txt
-touch /tmp/certbot_check_list.txt
+    # Temp-Datei für die gesammelten Keys der AKTUELLEN Domain vorbereiten
+    rm -f /tmp/certbot_check_list.txt
+    touch /tmp/certbot_check_list.txt
 
-echo -e "\n\e[1;36m========================================================\e[0m"
-echo -e "\e[1;36m      Sammle blitzschnell alle Keys von Certbot...      \e[0m"
-echo -e "\e[1;36m========================================================\e[0m\n"
-
-# Der intelligente Expect-Wrapper
-expect_script=$(cat << 'EOF'
+    # Der intelligente Expect-Wrapper
+    expect_script=$(cat << 'EOF'
 set timeout -1
 # Argumente sauber splitten, damit keine Leerzeichenprobleme entstehen
 set cmd_args [split $env(CERTBOT_ARGS) " "]
@@ -152,50 +155,52 @@ expect {
 EOF
 )
 
-# Expect ausführen und Exit-Code prüfen
-expect -c "$expect_script"
-EXIT_CODE=$?
+    # Expect ausführen
+    expect -c "$expect_script"
+    EXIT_CODE=$?
 
-if [ $EXIT_CODE -eq 0 ]; then
-    echo -e "\n\e[1;32mZertifizierungs-Prozess erfolgreich beendet!\e[0m"
-    
-    echo -e "\n\e[1;36m========================================================\e[0m"
-    echo -e "\e[1;36m Lade Webserver neu & Prüfe Live-Zertifikate...\e[0m"
-    echo -e "\e[1;36m========================================================\e[0m"
-    
-    # Apache neu laden (Fehler unterdrücken, falls Apache auf diesem Server gar nicht existiert)
-    if systemctl is-active --quiet apache2; then
-        echo -n "Lade Apache2 neu... "
-        sudo systemctl reload apache2
-        echo -e "\e[1;32mOK\e[0m"
-        sleep 2 # Gib dem Webserver kurz Zeit
-    elif systemctl is-active --quiet nginx; then
-        echo -n "Lade Nginx neu... "
-        sudo systemctl reload nginx
-        echo -e "\e[1;32mOK\e[0m"
-        sleep 2
-    else
-        echo -e "\e[1;33mBeachte: Weder Apache2 noch Nginx gefunden. Bitte Webserver manuell neu laden!\e[0m"
+    if [ $EXIT_CODE -ne 0 ]; then
+        echo -e "\n\e[1;31mDer Prozess für $DOM ist fehlgeschlagen! Breche Gesamtlauf ab.\e[0m"
+        exit 1
     fi
     
-    # Jede nackte Domain live via openSSL prüfen
-    echo -e "\n\e[1;34m--- Live-Check im Internet ---\e[0m"
-    for DOM in "${DOMAINS[@]}"; do
-        echo -n "Prüfe $DOM... "
-        # Hole das Datum der Live-Webseite
-        EXPIRY_DATE=$(echo | openssl s_client -servername "$DOM" -connect "${DOM}:443" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
-        
-        if [ -n "$EXPIRY_DATE" ]; then
-            # Parse Datum schöner (z.B. von "May  6 15:33:20 2026 GMT" zu "06.05.2026")
-            FORMATTED_DATE=$(date -d "$EXPIRY_DATE" '+%d.%m.%Y' 2>/dev/null || echo "$EXPIRY_DATE")
-            echo -e "\e[1;32mONLINE! Gültig bis: $FORMATTED_DATE\e[0m"
-        else
-            echo -e "\e[1;31mVerbindung fehlgeschlagen (Port 443 zu?)\e[0m"
-        fi
-    done
-    echo ""
-    
+    echo -e "\n\e[1;32mZertifikat für $DOM erfolgreich bezogen!\e[0m"
+    sleep 2 # Kurze Pause zur besseren Lesbarkeit bevor die nächste Domain dran ist
+done
+
+echo -e "\n\e[1;36m========================================================\e[0m"
+echo -e "\e[1;36m Lade Webserver neu & Prüfe Live-Zertifikate...\e[0m"
+echo -e "\e[1;36m========================================================\e[0m"
+
+# Apache/Nginx GEMEINSAM am Ende neu laden
+if systemctl is-active --quiet apache2; then
+    echo -n "Lade Apache2 neu... "
+    sudo systemctl reload apache2
+    echo -e "\e[1;32mOK\e[0m"
+    sleep 2 # Gib dem Webserver kurz Zeit
+elif systemctl is-active --quiet nginx; then
+    echo -n "Lade Nginx neu... "
+    sudo systemctl reload nginx
+    echo -e "\e[1;32mOK\e[0m"
+    sleep 2
 else
-    echo -e "\n\e[1;31mDer Prozess wurde abgebrochen oder ist fehlgeschlagen.\e[0m"
-    exit 1
+    echo -e "\e[1;33mBeachte: Weder Apache2 noch Nginx gefunden. Bitte Webserver manuell neu laden!\e[0m"
 fi
+
+# Jede nackte Domain live via openSSL prüfen
+echo -e "\n\e[1;34m--- Live-Check im Internet ---\e[0m"
+for DOM in "${DOMAINS[@]}"; do
+    echo -n "Prüfe $DOM... "
+    # Hole das Datum der Live-Webseite
+    EXPIRY_DATE=$(echo | openssl s_client -servername "$DOM" -connect "${DOM}:443" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+    
+    if [ -n "$EXPIRY_DATE" ]; then
+        # Parse Datum schöner (z.B. von "May  6 15:33:20 2026 GMT" zu "06.05.2026")
+        FORMATTED_DATE=$(date -d "$EXPIRY_DATE" '+%d.%m.%Y' 2>/dev/null || echo "$EXPIRY_DATE")
+        echo -e "\e[1;32mONLINE! Gültig bis: $FORMATTED_DATE\e[0m"
+    else
+        echo -e "\e[1;31mVerbindung fehlgeschlagen (Port 443 zu?)\e[0m"
+    fi
+done
+echo ""
+
