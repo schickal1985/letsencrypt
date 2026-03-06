@@ -1,6 +1,6 @@
 #!/bin/bash
-# Hauptskript zum Erneuern/Holen von Let's Encrypt Zertifikaten (PARALLELE ISOLIERTE VERSION)
-# Version: 1.0
+# Hauptskript zum Erneuern/Holen von Let's Encrypt Zertifikaten (PARALLELE VERSION)
+# Version: 0.9
 
 # Prüfe auf Root Rechte
 if [ "$EUID" -ne 0 ]; then
@@ -30,6 +30,7 @@ fix_windows_newlines() {
         echo -e "\e[1;33m[Fix] Windows-Zeilenumbrüche in '$file' gefunden. Repariere...\e[0m"
         sed -i 's/\r$//' "$file"
         
+        # Falls _dieses_ Skript repariert wurde, muss es sich selbst neu starten
         if [ "$file" == "$(realpath "$0")" ]; then
             echo -e "\e[1;32m[Neu-Start] Hauptskript wurde repariert, starte neu...\e[0m"
             exec "$0" "$@"
@@ -46,10 +47,9 @@ if [ -f "$CHECKER_SCRIPT" ]; then fix_windows_newlines "$CHECKER_SCRIPT"; fi
 chmod +x "$HOOK_SCRIPT" 2>/dev/null
 chmod +x "$CHECKER_SCRIPT" 2>/dev/null
 
-# Arrays für Domains und Keys
+# Array für Domains und ihre Wildcard-Option
 DOMAINS=()
 WILDCARDS=()
-EXPECTED_KEYS=0
 
 read -p "Gib eine domain ein. " FIRST_DOMAIN
 if [ -z "$FIRST_DOMAIN" ]; then
@@ -60,10 +60,8 @@ DOMAINS+=("$FIRST_DOMAIN")
 read -p "Soll für $FIRST_DOMAIN auch eine Wildcard (*.$FIRST_DOMAIN) angefordert werden? (j/n) [n]: " FIRST_WC
 if [[ "$FIRST_WC" =~ ^[jJ] ]]; then
     WILDCARDS+=(1)
-    EXPECTED_KEYS=$((EXPECTED_KEYS + 2))
 else
     WILDCARDS+=(0)
-    EXPECTED_KEYS=$((EXPECTED_KEYS + 1))
 fi
 
 while true; do
@@ -78,155 +76,126 @@ while true; do
     read -p "Soll für $NEXT_DOMAIN auch eine Wildcard (*.$NEXT_DOMAIN) angefordert werden? (j/n) [n]: " NEXT_WC
     if [[ "$NEXT_WC" =~ ^[jJ] ]]; then
         WILDCARDS+=(1)
-        EXPECTED_KEYS=$((EXPECTED_KEYS + 2))
     else
         WILDCARDS+=(0)
-        EXPECTED_KEYS=$((EXPECTED_KEYS + 1))
     fi
 done
 
-# Temp-Dateien für die gesammelten Keys und Signale vorbereiten
-rm -f /tmp/certbot_check_list.txt
-touch /tmp/certbot_check_list.txt
-rm -f /tmp/certbot_all_clear
-
-echo -e "\n\e[1;36m========================================================\e[0m"
-echo -e "\e[1;36m      Start isolierter Certbot-Instanzen im Hintergrund \e[0m"
-echo -e "\e[1;36m========================================================\e[0m\n"
-
-# Baue eine Expect-Vorlage, die wir für jeden Job nutzen
-cat << 'EOF' > /tmp/certbot_runner.exp
-set timeout -1
-set cmd_args [split $argv " "]
-eval spawn certbot $cmd_args
-
-expect {
-    -re "Select the appropriate number.*?press 'c' to cancel.*?: " {
-        send "2\r"
-        exp_continue
-    }
-    -re "\\(U\\)pdate certificate/\\(C\\)ancel: " {
-        send "u\r"
-        exp_continue
-    }
-    -re "Press Enter to Continue" {
-        # PAUSE: Warte auf das "ALL CLEAR" Signal vom Hauptskript
-        while {![file exists "/tmp/certbot_all_clear"]} {
-            sleep 1
-        }
-        send "\r"
-        exp_continue
-    }
-    eof {
-        exit 0
-    }
-}
-EOF
-
-# Starte für jede Domain einen EIGENEN Expect-Job im Hintergrund
-PIDS=()
+# Argumente für Certbot zusammenbauen
+CERTBOT_ARGS="certonly --manual --cert-name $FIRST_DOMAIN --expand"
 for i in "${!DOMAINS[@]}"; do
     DOM="${DOMAINS[$i]}"
     WC="${WILDCARDS[$i]}"
     
-    ARGS="certonly --manual --cert-name $DOM --expand"
     if [ "$WC" -eq 1 ]; then
-        ARGS="$ARGS -d *.$DOM -d $DOM"
+        CERTBOT_ARGS="$CERTBOT_ARGS -d *.$DOM -d $DOM"
     else
-        ARGS="$ARGS -d $DOM"
+        CERTBOT_ARGS="$CERTBOT_ARGS -d $DOM"
     fi
-    ARGS="$ARGS --agree-tos --preferred-challenges dns-01 --server https://acme-v02.api.letsencrypt.org/directory --register-unsafely-without-email --rsa-key-size 4096 --manual-auth-hook $HOOK_SCRIPT --debug-challenges"
-    
-    # Ausführen im Hintergrund
-    expect -f /tmp/certbot_runner.exp $ARGS > /dev/null 2>&1 &
-    PIDS+=($!)
-    echo "-> Job für $DOM gestartet (PID: ${!})..."
 done
+CERTBOT_ARGS="$CERTBOT_ARGS --agree-tos --preferred-challenges dns-01 --server https://acme-v02.api.letsencrypt.org/directory --register-unsafely-without-email --rsa-key-size 4096 --manual-auth-hook $HOOK_SCRIPT --debug-challenges"
+export CERTBOT_ARGS
 
-echo -e "\nWarte, bis alle $EXPECTED_KEYS Schlüssel generiert wurden..."
-
-# Hauptschleife: Warte bis alle Keys da sind
-while true; do
-    actual_keys=$(wc -l < /tmp/certbot_check_list.txt)
-    
-    # Prüfe, ob Jobs ggf. gestorben sind (verhindert Endlosschleife bei Fehlern)
-    alive_jobs=0
-    for pid in "${PIDS[@]}"; do
-        if kill -0 $pid 2>/dev/null; then
-            alive_jobs=$((alive_jobs + 1))
-        fi
-    done
-    
-    if [ "$alive_jobs" -eq 0 ] && [ "$actual_keys" -lt "$EXPECTED_KEYS" ]; then
-        echo -e "\n\e[1;31m[FEHLER] Alle Hintergrund-Jobs sind gestorben, bevor die Keys gesammelt wurden.\e[0m"
-        echo "Wahrscheinlich kam eine unerwartete Certbot-Abfrage oder ein Rate-Limit."
-        exit 1
-    fi
-
-    if [ "$actual_keys" -ge "$EXPECTED_KEYS" ]; then
-        break
-    fi
-    sleep 1
-done
+# Temp-Datei für die gesammelten Keys vorbereiten (Leeren/Erstellen)
+rm -f /tmp/certbot_check_list.txt
+touch /tmp/certbot_check_list.txt
 
 echo -e "\n\e[1;36m========================================================\e[0m"
-echo -e "\e[1;36m ALLE SCHLÜSSEL WURDEN GENERIERT UND GESAMMELT!\e[0m"
-echo -e "\e[1;36m Bitte trage nun ALLE Keys in Ruhe bei deinem Provider ein.\e[0m"
+echo -e "\e[1;36m      Sammle blitzschnell alle Keys von Certbot...      \e[0m"
 echo -e "\e[1;36m========================================================\e[0m\n"
 
-# Liste die Keys für den User auf (Hübsch formatiert)
-while read -r domain validation; do
-    echo -e "Host: \e[1;36m$domain\e[0m"
-    echo -e "Wert: \e[1;36m$validation\e[0m"
-    echo "--------------------------------------------------------"
-done < /tmp/certbot_check_list.txt
+# Der intelligente Expect-Wrapper
+expect_script=$(cat << 'EOF'
+set timeout -1
+# Argumente sauber splitten, damit keine Leerzeichenprobleme entstehen
+set cmd_args [split $env(CERTBOT_ARGS) " "]
+eval spawn certbot $cmd_args
 
-# Rufe nun den Checker auf. Dieser blockiert, bis alles grün ist.
-"$CHECKER_SCRIPT"
-CHECK_RESULT=$?
+# Fange Ctrl+C ab, damit expect nicht den ekligen Stacktrace wirft
+trap {
+    send_user "\n\033\[1;31m[ABBRUCH] Prozess durch Benutzer (Ctrl+C) abgebrochen!\033\[0m\n"
+    exit 2
+} SIGINT
 
-if [ $CHECK_RESULT -eq 0 ]; then
-    echo -e "\n\e[1;32mGebe grünes Licht an alle Certbot-Instanzen für die Ausstellung...\e[0m"
-    # Signal-Datei erstellen, damit die wait-Schleifen der Hintergrund-Expect-Jobs weiterlaufen
-    touch /tmp/certbot_all_clear
-    
-    # Warten, bis alle Jobs final abgearbeitet haben
-    wait "${PIDS[@]}"
-    
-    echo -e "\n\e[1;32mZertifizierungs-Prozesse erfolgreich beendet!\e[0m"
+expect {
+    -re "Select the appropriate number.*?press 'c' to cancel.*?: " {
+        # Falls Certbot fragt ob wir behalten oder erneuern wollen (exakt gleiche Domains)
+        send "2\r"
+        exp_continue
+    }
+    -re "\\(U\\)pdate certificate/\\(C\\)ancel: " {
+        # Falls Certbot meckert, dass Domains entfernt oder verändert wurden
+        send "u\r"
+        exp_continue
+    }
+    -re "Press Enter to Continue" {
+        # CERTBOT PAUSIERT NUN. ALLE KEYS SIND OBEN SICHTBAR.
+        # Wir rufen jetzt unser Bash-Checker-Skript auf,
+        # dieses blockiert so lange, bis Google und Cloudflare für ALLE Keys grün geben.
+        
+        # Falls das Checker-Skript mit Fehler beendet wird (z.B. durch Ctrl+C), 
+        # fangen wir das hier auf.
+        if {[catch {system "$env(CHECKER_SCRIPT)"} result]} {
+            send_user "\n\033\[1;31m[ABBRUCH] Checker-Skript wurde abgebrochen.\033\[0m\n"
+            exit 2
+        }
+        
+        # Sobald das Skript erfolgreich zurückkehrt, drücken wir Enter!
+        send "\r"
+        exp_continue
+    }
+    eof {
+        # Certbot ist komplett fertig.
+        exit 0
+    }
+}
+EOF
+)
+
+# Expect ausführen und Exit-Code prüfen
+expect -c "$expect_script"
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -eq 0 ]; then
+    echo -e "\n\e[1;32mZertifizierungs-Prozess erfolgreich beendet!\e[0m"
     
     echo -e "\n\e[1;36m========================================================\e[0m"
     echo -e "\e[1;36m Lade Webserver neu & Prüfe Live-Zertifikate...\e[0m"
     echo -e "\e[1;36m========================================================\e[0m"
     
+    # Apache neu laden (Fehler unterdrücken, falls Apache auf diesem Server gar nicht existiert)
     if systemctl is-active --quiet apache2; then
         echo -n "Lade Apache2 neu... "
         sudo systemctl reload apache2
         echo -e "\e[1;32mOK\e[0m"
-        sleep 2
+        sleep 2 # Gib dem Webserver kurz Zeit
     elif systemctl is-active --quiet nginx; then
         echo -n "Lade Nginx neu... "
         sudo systemctl reload nginx
         echo -e "\e[1;32mOK\e[0m"
         sleep 2
     else
-        echo -e "\e[1;33mBeachte: Weder Apache2 noch Nginx gefunden. Bitte manuell neu laden!\e[0m"
+        echo -e "\e[1;33mBeachte: Weder Apache2 noch Nginx gefunden. Bitte Webserver manuell neu laden!\e[0m"
     fi
     
+    # Jede nackte Domain live via openSSL prüfen
     echo -e "\n\e[1;34m--- Live-Check im Internet ---\e[0m"
     for DOM in "${DOMAINS[@]}"; do
         echo -n "Prüfe $DOM... "
+        # Hole das Datum der Live-Webseite
         EXPIRY_DATE=$(echo | openssl s_client -servername "$DOM" -connect "${DOM}:443" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+        
         if [ -n "$EXPIRY_DATE" ]; then
+            # Parse Datum schöner (z.B. von "May  6 15:33:20 2026 GMT" zu "06.05.2026")
             FORMATTED_DATE=$(date -d "$EXPIRY_DATE" '+%d.%m.%Y' 2>/dev/null || echo "$EXPIRY_DATE")
             echo -e "\e[1;32mONLINE! Gültig bis: $FORMATTED_DATE\e[0m"
         else
             echo -e "\e[1;31mVerbindung fehlgeschlagen (Port 443 zu?)\e[0m"
         fi
     done
+    echo ""
     
 else
-    echo -e "\n\e[1;31mDer DNS Check wurde abgebrochen.\e[0m"
-    kill "${PIDS[@]}" 2>/dev/null
+    echo -e "\n\e[1;31mDer Prozess wurde abgebrochen oder ist fehlgeschlagen.\e[0m"
     exit 1
 fi

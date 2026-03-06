@@ -20,9 +20,9 @@ while true; do
     
     while read -r domain validation; do
         if [ -z "${completed[$validation]}" ]; then
-            # Suche den genauen String bei Google und Cloudflare (Wichtig: -e flag wegen möglicher Keys, die mit - beginnen!)
-            G_FOUND=$(dig @8.8.8.8 TXT "$domain" +short | grep -F -e "$validation")
-            C_FOUND=$(dig @1.1.1.1 TXT "$domain" +short | grep -F -e "$validation")
+            # Suche den genauen String bei Google und Cloudflare
+            G_FOUND=$(dig @8.8.8.8 TXT "$domain" +short | grep -F "$validation")
+            C_FOUND=$(dig @1.1.1.1 TXT "$domain" +short | grep -F "$validation")
             
             if [ -n "$G_FOUND" ] && [ -n "$C_FOUND" ]; then
                 echo -e "\e[1;32m[+] ERFOLGREICH GEFUNDEN: $domain -> $validation\e[0m"
