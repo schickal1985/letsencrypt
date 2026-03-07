@@ -98,7 +98,7 @@ for i in "${!DOMAINS[@]}"; do
     if [ "$WC" -eq 1 ]; then
         CERTBOT_ARGS="$CERTBOT_ARGS -d *.$DOM -d $DOM"
     else
-        CERTBOT_ARGS="$CERTBOT_ARGS -d $DOM"
+        CERTBOT_ARGS="$CERTBOT_ARGS -d $DOM -d www.$DOM"
     fi
     CERTBOT_ARGS="$CERTBOT_ARGS --agree-tos --preferred-challenges dns-01 --server https://acme-v02.api.letsencrypt.org/directory --register-unsafely-without-email --rsa-key-size 4096 --manual-auth-hook $HOOK_SCRIPT --debug-challenges"
     export CERTBOT_ARGS
