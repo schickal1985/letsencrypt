@@ -1,6 +1,6 @@
 #!/bin/bash
 # Hauptskript zum Erneuern/Holen von Let's Encrypt Zertifikaten (SEQUENTIELLE VERSION / LÖSUNG C)
-# Version: 1.0
+# Version: 1.5
 
 # Prüfe auf Root Rechte
 if [ "$EUID" -ne 0 ]; then

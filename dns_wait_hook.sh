@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 1.0 (Sequentielle Version / Lösung C)
+# Version: 1.5 (Sequentielle Version / Lösung C)
 exec > /dev/tty 2>&1
 
 echo -e "\e[1;33m>>> SCHLÜSSEL GEFORDERT <<<\e[0m"
