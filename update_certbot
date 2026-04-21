@@ -1,6 +1,6 @@
 #!/bin/bash
 # Hauptskript zum Erneuern/Holen von Let's Encrypt Zertifikaten (SEQUENTIELLE VERSION / LÖSUNG C)
-# Version: 1.5
+# Version: 1.6
 
 # Prüfe auf Root Rechte
 if [ "$EUID" -ne 0 ]; then
@@ -97,8 +97,16 @@ for i in "${!DOMAINS[@]}"; do
     CERTBOT_ARGS="certonly --manual --cert-name $DOM --expand"
     if [ "$WC" -eq 1 ]; then
         CERTBOT_ARGS="$CERTBOT_ARGS -d *.$DOM -d $DOM"
+        echo -e "\e[1;33m>>> ACHTUNG: Wildcard-Modus aktiv! <<<\e[0m"
+        echo -e "Let's Encrypt wird \e[1;31mZWEI\e[0m TXT-Einträge für '_acme-challenge.$DOM' verlangen."
+        echo    "Beide haben den GLEICHEN Hostnamen, aber unterschiedliche Werte."
+        echo -e "Trage \e[1;32mbeiden Werte nacheinander\e[0m bei deinem DNS-Provider ein, BEVOR du bestätigst."
+        echo    "Viele Provider erlauben mehrere TXT-Einträge mit gleichem Namen - einfach zweimal 'Hinzufügen' klicken."
+        echo ""
     else
-        CERTBOT_ARGS="$CERTBOT_ARGS -d $DOM -d www.$DOM"
+        CERTBOT_ARGS="$CERTBOT_ARGS -d $DOM"
+        echo -e "\e[1;32m>>> Standard-Modus: Es wird genau 1 TXT-Eintrag verlangt. <<<\e[0m"
+        echo ""
     fi
     CERTBOT_ARGS="$CERTBOT_ARGS --agree-tos --preferred-challenges dns-01 --server https://acme-v02.api.letsencrypt.org/directory --register-unsafely-without-email --rsa-key-size 4096 --manual-auth-hook $HOOK_SCRIPT --debug-challenges"
     export CERTBOT_ARGS
