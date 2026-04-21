@@ -1,0 +1,10 @@
+# Alle Dateien standardmäßig mit LF
+* text=auto eol=lf
+
+# Shell-Skripte explizit auf LF erzwingen (Linux-kompatibel)
+*.sh text eol=lf
+update_certbot text eol=lf
+sed.sh text eol=lf
+
+# Windows-spezifische Dateien dürfen CRLF behalten
+*.bat text eol=crlf
