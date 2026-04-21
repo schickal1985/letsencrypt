@@ -1,6 +1,6 @@
 #!/bin/bash
 # Hauptskript zum Erneuern/Holen von Let's Encrypt Zertifikaten (SEQUENTIELLE VERSION / LÖSUNG C)
-# Version: 1.6
+# Version: 1.7
 
 # Prüfe auf Root Rechte
 if [ "$EUID" -ne 0 ]; then
@@ -47,9 +47,26 @@ if [ -f "$CHECKER_SCRIPT" ]; then fix_windows_newlines "$CHECKER_SCRIPT"; fi
 chmod +x "$HOOK_SCRIPT" 2>/dev/null
 chmod +x "$CHECKER_SCRIPT" 2>/dev/null
 
-# Array für Domains und ihre Wildcard-Option
+# Array für Domains und ihr Zertifikat-Modus (0=Root, 1=Root+www, 2=Wildcard)
 DOMAINS=()
 WILDCARDS=()
+
+ask_cert_mode() {
+    local dom="$1"
+    echo -e "\nWelches Zertifikat soll für \e[1;36m$dom\e[0m ausgestellt werden?"
+    echo -e "  \e[1;32m[1]\e[0m Nur Root-Domain       → $dom                    \e[2m(1 TXT-Eintrag)\e[0m"
+    echo -e "  \e[1;33m[2]\e[0m Root + www             → $dom + www.$dom         \e[2m(2 TXT-Einträge)\e[0m"
+    echo -e "  \e[1;35m[3]\e[0m Wildcard (empfohlen)   → *.$dom + $dom           \e[2m(2 TXT-Einträge, alles abgedeckt)\e[0m"
+    while true; do
+        read -p "Auswahl [1/2/3]: " MODE_CHOICE
+        case "$MODE_CHOICE" in
+            1) echo 0; return ;;
+            2) echo 1; return ;;
+            3) echo 2; return ;;
+            *) echo -e "\e[1;31mBitte 1, 2 oder 3 eingeben.\e[0m" ;;
+        esac
+    done
+}
 
 read -p "Gib eine domain ein. " FIRST_DOMAIN
 if [ -z "$FIRST_DOMAIN" ]; then
@@ -57,14 +74,10 @@ if [ -z "$FIRST_DOMAIN" ]; then
     exit 1
 fi
 DOMAINS+=("$FIRST_DOMAIN")
-read -p "Soll für $FIRST_DOMAIN auch eine Wildcard (*.$FIRST_DOMAIN) angefordert werden? (j/n) [n]: " FIRST_WC
-if [[ "$FIRST_WC" =~ ^[jJ] ]]; then
-    WILDCARDS+=(1)
-else
-    WILDCARDS+=(0)
-fi
+WILDCARDS+=("$(ask_cert_mode "$FIRST_DOMAIN")")
 
 while true; do
+    echo ""
     read -p "Gib eine weitere domain ein. (Oder drücke Enter zum Starten) " NEXT_DOMAIN
     
     if [ -z "$NEXT_DOMAIN" ]; then
@@ -72,13 +85,7 @@ while true; do
         break
     fi
     DOMAINS+=("$NEXT_DOMAIN")
-    
-    read -p "Soll für $NEXT_DOMAIN auch eine Wildcard (*.$NEXT_DOMAIN) angefordert werden? (j/n) [n]: " NEXT_WC
-    if [[ "$NEXT_WC" =~ ^[jJ] ]]; then
-        WILDCARDS+=(1)
-    else
-        WILDCARDS+=(0)
-    fi
+    WILDCARDS+=("$(ask_cert_mode "$NEXT_DOMAIN")")
 done
 
 
@@ -95,17 +102,23 @@ for i in "${!DOMAINS[@]}"; do
 
     # Argumente für exakt DIESE eine Domain bauen
     CERTBOT_ARGS="certonly --manual --cert-name $DOM --expand"
-    if [ "$WC" -eq 1 ]; then
-        CERTBOT_ARGS="$CERTBOT_ARGS -d *.$DOM -d $DOM"
-        echo -e "\e[1;33m>>> ACHTUNG: Wildcard-Modus aktiv! <<<\e[0m"
-        echo -e "Let's Encrypt wird \e[1;31mZWEI\e[0m TXT-Einträge für '_acme-challenge.$DOM' verlangen."
-        echo    "Beide haben den GLEICHEN Hostnamen, aber unterschiedliche Werte."
-        echo -e "Trage \e[1;32mbeiden Werte nacheinander\e[0m bei deinem DNS-Provider ein, BEVOR du bestätigst."
-        echo    "Viele Provider erlauben mehrere TXT-Einträge mit gleichem Namen - einfach zweimal 'Hinzufügen' klicken."
+    if [ "$WC" -eq 0 ]; then
+        # Modus 1: Nur Root-Domain
+        CERTBOT_ARGS="$CERTBOT_ARGS -d $DOM"
+        echo -e "\e[1;32m>>> Modus: Nur Root-Domain – es wird 1 TXT-Eintrag verlangt. <<<\e[0m"
+        echo ""
+    elif [ "$WC" -eq 1 ]; then
+        # Modus 2: Root + www
+        CERTBOT_ARGS="$CERTBOT_ARGS -d $DOM -d www.$DOM"
+        echo -e "\e[1;33m>>> Modus: Root + www – es werden 2 TXT-Einträge verlangt. <<<\e[0m"
+        echo    "Beide haben unterschiedliche Hostnamen: _acme-challenge.$DOM und _acme-challenge.www.$DOM"
         echo ""
     else
-        CERTBOT_ARGS="$CERTBOT_ARGS -d $DOM"
-        echo -e "\e[1;32m>>> Standard-Modus: Es wird genau 1 TXT-Eintrag verlangt. <<<\e[0m"
+        # Modus 3: Wildcard
+        CERTBOT_ARGS="$CERTBOT_ARGS -d *.$DOM -d $DOM"
+        echo -e "\e[1;35m>>> Modus: Wildcard (*.$DOM) – es werden 2 TXT-Einträge verlangt. <<<\e[0m"
+        echo -e "Beide haben den \e[1;31mGLEICHEN Hostnamen\e[0m (_acme-challenge.$DOM), aber unterschiedliche Werte!"
+        echo -e "Trage \e[1;32mbeiden Werte nacheinander\e[0m bei deinem Provider ein (zweimal 'Hinzufügen' klicken)."
         echo ""
     fi
     CERTBOT_ARGS="$CERTBOT_ARGS --agree-tos --preferred-challenges dns-01 --server https://acme-v02.api.letsencrypt.org/directory --register-unsafely-without-email --rsa-key-size 4096 --manual-auth-hook $HOOK_SCRIPT --debug-challenges"
