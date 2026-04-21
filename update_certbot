@@ -1,6 +1,6 @@
 #!/bin/bash
 # Hauptskript zum Erneuern/Holen von Let's Encrypt Zertifikaten (SEQUENTIELLE VERSION / LÖSUNG C)
-# Version: 1.7
+# Version: 1.8
 
 # Prüfe auf Root Rechte
 if [ "$EUID" -ne 0 ]; then
@@ -53,17 +53,19 @@ WILDCARDS=()
 
 ask_cert_mode() {
     local dom="$1"
-    echo -e "\nWelches Zertifikat soll für \e[1;36m$dom\e[0m ausgestellt werden?"
-    echo -e "  \e[1;32m[1]\e[0m Nur Root-Domain       → $dom                    \e[2m(1 TXT-Eintrag)\e[0m"
-    echo -e "  \e[1;33m[2]\e[0m Root + www             → $dom + www.$dom         \e[2m(2 TXT-Einträge)\e[0m"
-    echo -e "  \e[1;35m[3]\e[0m Wildcard (empfohlen)   → *.$dom + $dom           \e[2m(2 TXT-Einträge, alles abgedeckt)\e[0m"
+    # Alle Anzeige-Ausgaben gehen direkt ans Terminal (nicht stdout!)
+    # Damit landet nur die gewählte Zahl (0/1/2) in der Variable
+    echo -e "\nWelches Zertifikat soll für \e[1;36m$dom\e[0m ausgestellt werden?" > /dev/tty
+    echo -e "  \e[1;32m[1]\e[0m Nur Root-Domain       → $dom                    \e[2m(1 TXT-Eintrag)\e[0m" > /dev/tty
+    echo -e "  \e[1;33m[2]\e[0m Root + www             → $dom + www.$dom         \e[2m(2 TXT-Einträge)\e[0m" > /dev/tty
+    echo -e "  \e[1;35m[3]\e[0m Wildcard (empfohlen)   → *.$dom + $dom           \e[2m(2 TXT-Einträge, alles abgedeckt)\e[0m" > /dev/tty
     while true; do
-        read -p "Auswahl [1/2/3]: " MODE_CHOICE
+        read -p "Auswahl [1/2/3]: " MODE_CHOICE < /dev/tty
         case "$MODE_CHOICE" in
             1) echo 0; return ;;
             2) echo 1; return ;;
             3) echo 2; return ;;
-            *) echo -e "\e[1;31mBitte 1, 2 oder 3 eingeben.\e[0m" ;;
+            *) echo -e "\e[1;31mBitte 1, 2 oder 3 eingeben.\e[0m" > /dev/tty ;;
         esac
     done
 }
@@ -124,8 +126,9 @@ for i in "${!DOMAINS[@]}"; do
     CERTBOT_ARGS="$CERTBOT_ARGS --agree-tos --preferred-challenges dns-01 --server https://acme-v02.api.letsencrypt.org/directory --register-unsafely-without-email --rsa-key-size 4096 --manual-auth-hook $HOOK_SCRIPT --debug-challenges"
     export CERTBOT_ARGS
 
-    # Temp-Datei für die gesammelten Keys der AKTUELLEN Domain vorbereiten
+    # Temp-Dateien für die AKTUELLE Domain vorbereiten (auch Counter-Reset!)
     rm -f /tmp/certbot_check_list.txt
+    rm -f "/tmp/certbot_hook_counter_${DOM}"
     touch /tmp/certbot_check_list.txt
 
     # Der intelligente Expect-Wrapper
@@ -137,7 +140,7 @@ eval spawn certbot $cmd_args
 
 # Fange Ctrl+C ab, damit expect nicht den ekligen Stacktrace wirft
 trap {
-    send_user "\n\033\[1;31m[ABBRUCH] Prozess durch Benutzer (Ctrl+C) abgebrochen!\033\[0m\n"
+    send_user "\n\033\[1;31m\[ABBRUCH\] Prozess durch Benutzer (Ctrl+C) abgebrochen!\033\[0m\n"
     exit 2
 } SIGINT
 
@@ -160,7 +163,7 @@ expect {
         # Falls das Checker-Skript mit Fehler beendet wird (z.B. durch Ctrl+C), 
         # fangen wir das hier auf.
         if {[catch {system "$env(CHECKER_SCRIPT)"} result]} {
-            send_user "\n\033\[1;31m[ABBRUCH] Checker-Skript wurde abgebrochen.\033\[0m\n"
+            send_user "\n\033\[1;31m\[ABBRUCH\] Checker-Skript wurde abgebrochen.\033\[0m\n"
             exit 2
         }
         

@@ -15,6 +15,7 @@ echo "Das Skript prüft nun fortlaufend alle geforderten Einträge parallel."
 declare -A history_g
 declare -A history_c
 declare -A checks_count
+declare -A completed
 
 while true; do
     all_done=true
