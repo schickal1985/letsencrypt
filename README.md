@@ -4,7 +4,7 @@ Dieses Projekt stellt ein Bash-Wrapper-Skript (`update_certbot`) zur automatisie
 
 ## Übersicht
 
-Das Hauptskript führt den Benutzer durch die Anforderung von Zertifikaten (inklusive Wildcards) für eine oder mehrere Domains. Es nutzt dabei das Tool `expect` um den Ablauf von certbot zu automatisieren und wartet automatisch darauf, dass die DNS-Einträge global (Google und Cloudflare DNS) propagiert sind, bevor der Prozess fortgesetzt wird.
+Das Hauptskript führt den Benutzer durch die Anforderung von Zertifikaten (inklusive Wildcards) für eine oder mehrere Domains. Es nutzt dabei das Tool `expect` um den Ablauf von certbot zu automatisieren und wartet automatisch darauf, dass die DNS-Einträge global (Google, Cloudflare und OpenDNS DNS) propagiert sind, bevor der Prozess fortgesetzt wird.
 
 ## Voraussetzungen
 
@@ -15,7 +15,7 @@ Das Hauptskript führt den Benutzer durch die Anforderung von Zertifikaten (inkl
 ## Dateien im Repository
 
 - `update_certbot`: Das Hauptskript, das ausgeführt wird. Fragt Domains ab und steuert den Certbot-Prozess via `expect`.
-- `dns_checker.sh`: Ein Hilfsskript, das aufgerufen wird, bevor Certbot bestätigt wird. Es prüft aktiv gegen externe Nameserver, ob die TXT-Records weltweit sichtbar sind.
+- `dns_checker.sh`: Ein Hilfsskript, das aufgerufen wird, bevor Certbot bestätigt wird. Es prüft aktiv gegen externe Nameserver (Google, Cloudflare und OpenDNS), ob die TXT-Records weltweit sichtbar sind, und stellt den Fortschritt in einem kompakten In-Place-Dashboard mit einer Sanduhr-Animation und Countdown dar.
 - `dns_wait_hook.sh`: Ein Authentifizierungs-Hook für den Certbot-Prozess.
 - `test_ssl_batch.bat`: Ein optionales Batch-Skript für Testzwecke unter Windows.
 
