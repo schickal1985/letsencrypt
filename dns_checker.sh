@@ -1,13 +1,22 @@
 #!/bin/bash
-# Version: 1.6
+# Version: 1.7
 # Dieses Skript wird vom głównen `update_certbot` Wrapper aufgerufen, 
 # SOBALD Certbot alle Keys gesammelt hat und auf das finale [ENTER] wartet.
 
 exec > /dev/tty 2>&1
 
 echo -e "\e[1;36m========================================================\e[0m"
-echo -e "\e[1;36m ALLE SCHLÜSSEL WURDEN GENERIERT UND OBEN ANGEZEIGT!\e[0m"
-echo -e "\e[1;36m Bitte trage nun ALLE Keys in Ruhe bei deinem Provider ein.\e[0m"
+echo -e "\e[1;36m BITTE TRAGE FOLGENDE DNS-TXT-EINTRÄGE BEI DEINEM PROVIDER EIN:\e[0m"
+echo -e "\e[1;36m========================================================\e[0m"
+idx=1
+while read -r domain validation; do
+    echo -e "  \e[1;37mEintrag #$idx:\e[0m"
+    echo -e "    Typ:      \e[1;32mTXT\e[0m"
+    echo -e "    Hostname: \e[1;32m_acme-challenge.$domain\e[0m"
+    echo -e "    Wert:     \e[1;35m$validation\e[0m"
+    echo ""
+    idx=$((idx + 1))
+done < /tmp/certbot_check_list.txt
 echo -e "\e[1;36m========================================================\e[0m"
 echo "Das Skript prüft nun fortlaufend alle geforderten Einträge parallel."
 
