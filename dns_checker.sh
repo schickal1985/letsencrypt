@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 1.5
+# Version: 1.6
 # Dieses Skript wird vom głównen `update_certbot` Wrapper aufgerufen, 
 # SOBALD Certbot alle Keys gesammelt hat und auf das finale [ENTER] wartet.
 
@@ -19,6 +19,8 @@ declare -A completed
 
 while true; do
     all_done=true
+    TIMESTAMP=$(date "+%H:%M:%S")
+    echo -e "\n[$TIMESTAMP] Prüfe DNS-Propagation..."
     
     while read -r domain validation; do
         if [ -z "${completed[$validation]}" ]; then
@@ -28,8 +30,14 @@ while true; do
             G_FOUND=$(dig @8.8.8.8 TXT "_acme-challenge.$domain" +short | grep -F -e "$validation")
             C_FOUND=$(dig @1.1.1.1 TXT "_acme-challenge.$domain" +short | grep -F -e "$validation")
             
-            # Aktuellen Zählerstand holen (wie oft haben wir diesen Key schon geprüft?)
+            # Status für die Konsolenausgabe ermitteln
+            if [ -n "$G_FOUND" ]; then G_STAT="\e[1;32mOK\e[0m"; else G_STAT="\e[1;31mFEHLT\e[0m"; fi
+            if [ -n "$C_FOUND" ]; then C_STAT="\e[1;32mOK\e[0m"; else C_STAT="\e[1;31mFEHLT\e[0m"; fi
+            
+            # Zeige aktuellen Prüfstatus an
+            val_short="${validation:0:8}..."
             count=${checks_count[$validation]:-0}
+            echo -e "  - _acme-challenge.$domain (Wert: $val_short): Google [$G_STAT] | Cloudflare [$C_STAT] (Check $((count + 1))/90)"
             
             # Position im Ringpuffer (0 bis 9)
             pos=$((count % 10))
@@ -40,9 +48,24 @@ while true; do
             
             # Zähler erhöhen
             checks_count[$validation]=$((count + 1))
+            new_count=$((count + 1))
+            
+            # Warnung bei Verzögerung (nach 60 Prüfungen, ca. 10 Minuten)
+            if [ "$new_count" -eq 60 ]; then
+                echo -e "\n\e[1;33m⚠ WARNUNG: Der Eintrag für '_acme-challenge.$domain' (Wert: $val_short) ist seit 10 Minuten (60 Checks) nicht auffindbar!\e[0m"
+                echo -e "\e[1;33mBitte prüfe, ob du den Eintrag bei deinem Provider eventuell überschrieben oder nicht korrekt gespeichert hast.\e[0m"
+                echo -e "\e[1;33mBei Wildcard-Zertifikaten müssen BEIDE TXT-Einträge gleichzeitig unter dem Namen '_acme-challenge.$domain' aktiv sein!\e[0m\n"
+            fi
+            
+            # Timeout (nach 90 Prüfungen, ca. 15 Minuten)
+            if [ "$new_count" -ge 90 ]; then
+                echo -e "\n\e[1;31m❌ FEHLER: Timeout nach 90 Prüfungen (15 Min.) für '_acme-challenge.$domain' erreicht!\e[0m"
+                echo -e "\e[1;31mProzess abgebrochen. Bitte korrigiere die DNS-Einträge und starte das Skript neu.\e[0m"
+                exit 3
+            fi
             
             # Wenn wir noch keine 10 Checks haben, geben wir noch kein "Erfolgreich"
-            if [ "${checks_count[$validation]}" -ge 10 ]; then
+            if [ "$new_count" -ge 10 ]; then
                 # Summe der letzten 10 Ergebnisse berechnen
                 sum_g=0
                 sum_c=0
@@ -53,7 +76,7 @@ while true; do
                 
                 # Wenn mindestens 90% (9 von 10) auf beiden Servern erfolgreich waren
                 if [ "$sum_g" -ge 9 ] && [ "$sum_c" -ge 9 ]; then
-                    echo -e "\e[1;32m[+] STABIL GEFUNDEN (>=90%): $domain -> $validation\e[0m"
+                    echo -e "\n\e[1;32m[+] STABIL GEFOUNDEN (>=90%): $domain -> $validation\e[0m"
                     completed[$validation]=1
                 fi
             fi
@@ -70,8 +93,6 @@ while true; do
         echo -e "\n\e[1;32mGebe grünes Licht an Certbot für die Ausstellung...\e[0m"
         exit 0
     else
-        # Lade-Punkt für optisches Feedback
-        echo -n "."
         sleep 10
     fi
 done
