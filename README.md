@@ -30,4 +30,4 @@ sudo ./update_certbot
 Folge anschließend den interaktiven Anweisungen, um deine Domains und Wildcard-Präferenzen einzugeben. Das Skript lädt nach erfolgreicher Arbeit automatisch deinen Webserver (Apache2 oder Nginx) neu und führt abschließend einen Online-Check der Zertifikate aus.
 
 ## Lösung C (Sequentielle Abarbeitung)
-Die Skripte (in Version 1.5) setzen auf "Lösung C": Sie arbeiten Zertifikate sequentiell pro Domain ab, isolieren diese Anfragen voneinander und warten beim DNS-01 Challenge intelligent ab, bis die TXT-Records zur Validierung sicher bereitstehen.
+Die Skripte (in Version 1.9) setzen auf "Lösung C": Sie arbeiten Zertifikate sequentiell pro Domain ab, isolieren diese Anfragen voneinander und warten beim DNS-01 Challenge intelligent ab, bis die TXT-Records zur Validierung sicher bereitstehen.
