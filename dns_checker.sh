@@ -1,9 +1,11 @@
 #!/bin/bash
-# Version: 1.7
+# Version: 1.9.5
 # Dieses Skript wird vom głównen `update_certbot` Wrapper aufgerufen, 
 # SOBALD Certbot alle Keys gesammelt hat und auf das finale [ENTER] wartet.
 
 exec > /dev/tty 2>&1
+
+CHECK_LIST_FILE="${CHECK_LIST_FILE:-/tmp/certbot_check_list.txt}"
 
 echo -e "\e[1;36m========================================================\e[0m"
 echo -e "\e[1;36m BITTE TRAGE FOLGENDE DNS-TXT-EINTRÄGE BEI DEINEM PROVIDER EIN:\e[0m"
@@ -16,7 +18,7 @@ while read -r domain validation; do
     echo -e "    Wert:     \e[1;35m$validation\e[0m"
     echo ""
     idx=$((idx + 1))
-done < /tmp/certbot_check_list.txt
+done < "$CHECK_LIST_FILE"
 echo -e "\e[1;36m========================================================\e[0m"
 echo "Das Skript prüft nun fortlaufend alle geforderten Einträge parallel."
 
@@ -38,7 +40,7 @@ while read -r domain validation; do
         domains+=("$domain")
         validations+=("$validation")
     fi
-done < /tmp/certbot_check_list.txt
+done < "$CHECK_LIST_FILE"
 
 NUM_ENTRIES=${#domains[@]}
 BLOCK_HEIGHT=$((NUM_ENTRIES + 1))
@@ -119,10 +121,10 @@ while true; do
         if [ -z "${completed[$validation]}" ]; then
             all_done=false
             
-            # DNS Abfragen
-            G_FOUND=$(dig @8.8.8.8 TXT "_acme-challenge.$domain" +short | grep -F -e "$validation")
-            C_FOUND=$(dig @1.1.1.1 TXT "_acme-challenge.$domain" +short | grep -F -e "$validation")
-            O_FOUND=$(dig @208.67.222.222 TXT "_acme-challenge.$domain" +short | grep -F -e "$validation")
+            # DNS Abfragen mit Timeout und 1 Retry für stabile und flüssige Dashboard-Aktualisierungen
+            G_FOUND=$(dig @8.8.8.8 TXT "_acme-challenge.$domain" +short +time=2 +tries=1 2>/dev/null | grep -F -e "$validation")
+            C_FOUND=$(dig @1.1.1.1 TXT "_acme-challenge.$domain" +short +time=2 +tries=1 2>/dev/null | grep -F -e "$validation")
+            O_FOUND=$(dig @208.67.222.222 TXT "_acme-challenge.$domain" +short +time=2 +tries=1 2>/dev/null | grep -F -e "$validation")
             
             # Status ermitteln
             if [ -n "$G_FOUND" ]; then google_status[$validation]="\e[1;32mOK\e[0m"; else google_status[$validation]="\e[1;31mFEHLT\e[0m"; fi

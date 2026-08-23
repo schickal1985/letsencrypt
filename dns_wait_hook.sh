@@ -1,9 +1,12 @@
 #!/bin/bash
-# Version: 1.7 (Sequentielle Version / Lösung C)
+# Version: 1.9.5 (Sequentielle Version / Lösung C)
 exec > /dev/tty 2>&1
 
+WORK_DIR="${WORK_DIR:-/tmp}"
+CHECK_LIST_FILE="${CHECK_LIST_FILE:-/tmp/certbot_check_list.txt}"
+
 # Zähle wie viele Schlüssel für diese Domain bereits angefordert wurden
-COUNTER_FILE="/tmp/certbot_hook_counter_${CERTBOT_DOMAIN}"
+COUNTER_FILE="$WORK_DIR/certbot_hook_counter_${CERTBOT_DOMAIN}"
 if [ -f "$COUNTER_FILE" ]; then
     COUNT=$(cat "$COUNTER_FILE")
     COUNT=$((COUNT + 1))
@@ -73,13 +76,13 @@ fi
 
 echo -e "\e[1;36m──────────────────────────────────────────────────────\e[0m"
 echo -e "\e[1;32m  Das Skript prüft nun automatisch im Hintergrund,\e[0m"
-echo -e "\e[1;32m  ob der Eintrag weltweit sichtbar ist (Google & Cloudflare).\e[0m"
+echo -e "\e[1;32m  ob der Eintrag weltweit sichtbar ist (Google, Cloudflare & OpenDNS).\e[0m"
 echo -e "\e[1;32m  Du musst nichts weiter tun – einfach warten!\e[0m"
 echo -e "\e[1;36m──────────────────────────────────────────────────────\e[0m"
 echo ""
 
 # Füge Key zur Checker-Liste hinzu
-echo "$CERTBOT_DOMAIN $CERTBOT_VALIDATION" >> /tmp/certbot_check_list.txt
+echo "$CERTBOT_DOMAIN $CERTBOT_VALIDATION" >> "$CHECK_LIST_FILE"
 
 # Beende Hook sofort, damit Certbot weiterläuft bis "Press Enter to Continue"
 exit 0

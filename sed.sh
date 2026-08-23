@@ -1,1 +1,1 @@
-sed -i 's/\r$//' update_certbot dns_wait_hook.sh
+sed -i 's/\r$//' update_certbot dns_wait_hook.sh dns_checker.sh

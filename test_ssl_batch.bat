@@ -7,10 +7,21 @@ echo ===================================================
 echo        SSL ZERTIFIKAT LIVE-TESTER
 echo ===================================================
 echo.
-set /p domain="Gib die zu pruefende Domain ein (z.B. energetikologie.at): "
+set /p raw_domain="Gib die zu pruefende Domain ein (z.B. energetikologie.at): "
+
+:: Domain bereinigen (https://, http:// und trailing slashes entfernen)
+set "domain=%raw_domain%"
+set "domain=%domain:https://=%"
+set "domain=%domain:http://=%"
+if "%domain:~-1%"=="/" set "domain=%domain:~0,-1%"
+
+if "%domain%"=="" (
+    echo Ungueltige Eingabe!
+    goto START
+)
 
 echo.
-echo [1/2] LOKALE GEGENPRUEFUNG (Dein Computer) ...
+echo [1/2] LOKALE GEGENPRUEFUNG (Dein Computer: %domain%) ...
 powershell -Command "$ErrorActionPreference = 'SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $req = [Net.HttpWebRequest]::Create('https://%domain%'); $req.Timeout = 5000; $response = $req.GetResponse(); if($?) { $cert = $req.ServicePoint.Certificate; $certObj = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($cert); Write-Host '  -> VERBUNDEN! Gueltig bis: ' $certObj.NotAfter -ForegroundColor Green; $response.Close() } else { Write-Host '  -> FEHLER: Lokal nicht abrufbar!' -ForegroundColor Red }"
 
 echo.
