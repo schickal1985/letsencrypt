@@ -4,7 +4,7 @@ Dieses Projekt stellt ein Bash-Wrapper-Skript (`update_certbot`) zur automatisie
 
 ## Übersicht
 
-Das Hauptskript führt den Benutzer durch die Anforderung von Zertifikaten (inklusive Wildcards) für eine oder mehrere Domains. Es nutzt dabei das Tool `expect` um den Ablauf von certbot zu automatisieren und wartet automatisch darauf, dass die DNS-Einträge global (Google, Cloudflare und OpenDNS DNS) propagiert sind, bevor der Prozess fortgesetzt wird.
+Das Hauptskript führt den Benutzer durch die Anforderung von Zertifikaten im festen Modus **Root + www** (`domain.de` + `www.domain.de`) für eine oder mehrere Domains. Es setzt vor jedem Durchlauf eventuell gecachte Let's Encrypt-Freigaben zurück (sodass immer zuverlässig 2 frische TXT-Codes erstellt werden), nutzt `expect` zur Steuerung von Certbot und prüft die DNS-Einträge direkt auf den **autoritativen Nameservern** der jeweiligen Domain (inklusive Warnung bei versehentlich mitkopierten Leerzeichen). Sobald 3 Checks in Folge `OK` melden, wird das Zertifikat sofort ausgestellt.
 
 ## Voraussetzungen
 
@@ -17,9 +17,9 @@ Das Hauptskript führt den Benutzer durch die Anforderung von Zertifikaten (inkl
 
 ## Dateien im Repository
 
-- `update_certbot`: Das Hauptskript, das ausgeführt wird. Führt Pre-Flight Checks durch, fragt Domains ab, verwaltet temporäre Arbeitsdaten sicher per `trap` und steuert den Certbot-Prozess via `expect`.
-- `dns_checker.sh`: Ein Hilfsskript, das aufgerufen wird, bevor Certbot bestätigt wird. Es prüft aktiv gegen externe Nameserver (Google, Cloudflare und OpenDNS), ob die TXT-Records weltweit sichtbar sind, und stellt den Fortschritt in einem kompakten In-Place-Dashboard mit einer Sanduhr-Animation und Countdown dar.
-- `dns_wait_hook.sh`: Ein Authentifizierungs-Hook für den Certbot-Prozess.
+- `update_certbot`: Das Hauptskript, das ausgeführt wird. Führt Pre-Flight Checks durch, fragt die Domains ab (immer im Modus `Root + www`), setzt gecachte ACME-Autorisierungen zurück, steuert den Certbot-Prozess via `expect` und wertet den echten Exit-Code von Certbot sowie das ausgestellte Zertifikat aus.
+- `dns_checker.sh`: Ein Hilfsskript, das aufgerufen wird, bevor Certbot bestätigt wird. Es ermittelt automatisch die autoritativen Nameserver der Domain und prüft diese direkt auf exakte Übereinstimmung (inkl. Leerzeichen-Erkennung). Nach 3 erfolgreichen Checks in Folge gibt es sofort grünes Licht.
+- `dns_wait_hook.sh`: Ein Authentifizierungs-Hook für den Certbot-Prozess (nummeriert die 2 TXT-Codes pro Domain übersichtlich durch).
 - `sed.sh`: Kleines Hilfsskript zur Bereinigung von Windows-Zeilenumbrüchen (CRLF -> LF).
 - `test_ssl_batch.bat`: Ein optionales Batch-Skript für Live-Tests unter Windows.
 
@@ -31,7 +31,7 @@ Führe das Hauptskript als root aus:
 sudo ./update_certbot
 ```
 
-Folge anschließend den interaktiven Anweisungen, um deine Domains und Wildcard-Präferenzen einzugeben. Das Skript lädt nach erfolgreicher Arbeit automatisch deine Webserver (Apache2 und/oder Nginx) neu und führt abschließend einen Online-Check der Zertifikate aus.
+Folge anschließend den interaktiven Anweisungen, um deine Domains einzugeben. Das Skript lädt nach erfolgreicher Arbeit automatisch deine Webserver (Apache2 und/oder Nginx) neu und führt abschließend einen Online-Check der Zertifikate aus.
 
-## Lösung C (Sequentielle Abarbeitung)
-Die Skripte (in Version 1.9.5) setzen auf "Lösung C": Sie arbeiten Zertifikate sequentiell pro Domain ab, isolieren diese Anfragen voneinander und warten beim DNS-01 Challenge intelligent ab, bis die TXT-Records zur Validierung sicher bereitstehen.
+## Version 2.0.0 (Sequentielle Abarbeitung & Autoritative Nameserver-Prüfung)
+Die Skripte (in Version 2.0.0) arbeiten Zertifikate sequentiell pro Domain im Modus `Root + www` (2 TXT-Codes) ab, erzwingen bei jedem Start 2 frische Challenges und prüfen beim DNS-01 Challenge direkt die autoritativen Nameserver der jeweiligen Domain.

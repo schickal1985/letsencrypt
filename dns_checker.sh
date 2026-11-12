@@ -1,11 +1,35 @@
 #!/bin/bash
-# Version: 1.9.5
-# Dieses Skript wird vom głównen `update_certbot` Wrapper aufgerufen, 
+# Version: 2.0.0
+# Dieses Skript wird vom Hauptskript `update_certbot` aufgerufen,
 # SOBALD Certbot alle Keys gesammelt hat und auf das finale [ENTER] wartet.
+# Es ermittelt automatisch die autoritativen Nameserver der Domain (genau wie Let's Encrypt)
+# und gibt sofort nach 3 erfolgreichen Checks in Folge grünes Licht.
 
 exec > /dev/tty 2>&1
 
 CHECK_LIST_FILE="${CHECK_LIST_FILE:-/tmp/certbot_check_list.txt}"
+REQUIRED_STREAK=3
+CHECK_INTERVAL=5
+MAX_CHECKS=360
+
+# Ermittelt alle autoritativen Nameserver für eine Domain (geht bei Subdomains wie www. bis zur Zone-Apex hoch)
+get_auth_nameservers() {
+    local cur="_acme-challenge.$1"
+    local ns_list=""
+    while [[ "$cur" == *.* ]]; do
+        ns_list=$(dig @8.8.8.8 "$cur" NS +noall +answer +time=2 +tries=1 2>/dev/null | awk '$4 == "NS" {print $5}' | sed 's/\.$//' | sort -u)
+        if [ -z "$ns_list" ]; then
+            ns_list=$(dig @1.1.1.1 "$cur" NS +noall +answer +time=2 +tries=1 2>/dev/null | awk '$4 == "NS" {print $5}' | sed 's/\.$//' | sort -u)
+        fi
+        if [ -n "$ns_list" ]; then
+            echo "$ns_list" | tr '\n' ' ' | sed 's/ $//'
+            return 0
+        fi
+        cur="${cur#*.}"
+    done
+    # Fallback auf öffentliche Resolver, falls NS-Ermittlung fehlschlägt
+    echo "8.8.8.8 1.1.1.1"
+}
 
 echo -e "\e[1;36m========================================================\e[0m"
 echo -e "\e[1;36m BITTE TRAGE FOLGENDE DNS-TXT-EINTRÄGE BEI DEINEM PROVIDER EIN:\e[0m"
@@ -20,25 +44,26 @@ while read -r domain validation; do
     idx=$((idx + 1))
 done < "$CHECK_LIST_FILE"
 echo -e "\e[1;36m========================================================\e[0m"
-echo "Das Skript prüft nun fortlaufend alle geforderten Einträge parallel."
+echo "Ermittle zuständige (autoritative) Nameserver und prüfe fortlaufend..."
+echo "Sobald $REQUIRED_STREAK Checks in Folge auf allen Nameservern OK melden, wird sofort ausgestellt!"
 
-# Speichert den Verlauf (0=Fehler, 1=Erfolg) der letzten 10 Checks pro Key
-declare -A history_g
-declare -A history_c
-declare -A history_o
 declare -A checks_count
+declare -A streak
 declare -A completed
-declare -A google_status
-declare -A cloudflare_status
-declare -A opendns_status
+declare -A whitespace_warned
+declare -A ns_status_line
+declare -A domain_ns_map
 
-# Lese alle Einträge ein
+# Lese alle Einträge ein und ermittle einmalig die autoritativen Nameserver pro Domain
 domains=()
 validations=()
 while read -r domain validation; do
     if [ -n "$domain" ] && [ -n "$validation" ]; then
         domains+=("$domain")
         validations+=("$validation")
+        if [ -z "${domain_ns_map[$domain]}" ]; then
+            domain_ns_map["$domain"]="$(get_auth_nameservers "$domain")"
+        fi
     fi
 done < "$CHECK_LIST_FILE"
 
@@ -83,7 +108,7 @@ draw_ui() {
     done
     
     # Header Zeile
-    echo -e " \e[1;36m$sp [$timestamp] Prüfe DNS-Propagation... (Aktiv: $active_count, Stabil: $completed_count) \e[1;30m[$status_info]\e[0m"
+    echo -e " \e[1;36m$sp [$timestamp] Prüfe autoritative Nameserver... (Aktiv: $active_count, Fertig: $completed_count) \e[1;30m[$status_info]\e[0m"
     
     # Details pro Domain
     for idx in "${!domains[@]}"; do
@@ -93,13 +118,12 @@ draw_ui() {
         
         if [ -n "${completed[$validation]}" ]; then
             local count=${checks_count[$validation]:-0}
-            echo -e "  \e[1;32m✅ _acme-challenge.$domain (Wert: $val_short): STABIL GEFUNDEN (nach $count Checks)\e[0m"
+            echo -e "  \e[1;32m✅ _acme-challenge.$domain (Wert: $val_short): VERIFIZIERT (${REQUIRED_STREAK}/${REQUIRED_STREAK} OK nach $count Checks)\e[0m"
         else
             local count=${checks_count[$validation]:-0}
-            local g_stat=${google_status[$validation]:-"\e[1;30mWARTE\e[0m"}
-            local c_stat=${cloudflare_status[$validation]:-"\e[1;30mWARTE\e[0m"}
-            local o_stat=${opendns_status[$validation]:-"\e[1;30mWARTE\e[0m"}
-            echo -e "  \e[1;33m⏳ _acme-challenge.$domain (Wert: $val_short): Google [$g_stat] | Cloudflare [$c_stat] | OpenDNS [$o_stat] (Check $count/90)\e[0m"
+            local cur_streak=${streak[$validation]:-0}
+            local status_str=${ns_status_line[$validation]:-"\e[1;30mWARTE...\e[0m"}
+            echo -e "  \e[1;33m⏳ _acme-challenge.$domain (Wert: $val_short): $status_str (OK-Serie: ${cur_streak}/${REQUIRED_STREAK}, Check $count)\e[0m"
         fi
     done
     
@@ -121,62 +145,86 @@ while true; do
         if [ -z "${completed[$validation]}" ]; then
             all_done=false
             
-            # DNS Abfragen mit Timeout und 1 Retry für stabile und flüssige Dashboard-Aktualisierungen
-            G_FOUND=$(dig @8.8.8.8 TXT "_acme-challenge.$domain" +short +time=2 +tries=1 2>/dev/null | grep -F -e "$validation")
-            C_FOUND=$(dig @1.1.1.1 TXT "_acme-challenge.$domain" +short +time=2 +tries=1 2>/dev/null | grep -F -e "$validation")
-            O_FOUND=$(dig @208.67.222.222 TXT "_acme-challenge.$domain" +short +time=2 +tries=1 2>/dev/null | grep -F -e "$validation")
+            ns_servers=(${domain_ns_map["$domain"]})
+            all_ns_ok=true
+            has_whitespace=false
+            line_parts=()
             
-            # Status ermitteln
-            if [ -n "$G_FOUND" ]; then google_status[$validation]="\e[1;32mOK\e[0m"; else google_status[$validation]="\e[1;31mFEHLT\e[0m"; fi
-            if [ -n "$C_FOUND" ]; then cloudflare_status[$validation]="\e[1;32mOK\e[0m"; else cloudflare_status[$validation]="\e[1;31mFEHLT\e[0m"; fi
-            if [ -n "$O_FOUND" ]; then opendns_status[$validation]="\e[1;32mOK\e[0m"; else opendns_status[$validation]="\e[1;31mFEHLT\e[0m"; fi
+            for ns in "${ns_servers[@]}"; do
+                RAW=$(dig @"$ns" TXT "_acme-challenge.$domain" +short +norecurse +time=2 +tries=1 2>/dev/null)
+                FOUND=$(echo "$RAW" | grep -Fx -e "\"$validation\"")
+                SUB=$(echo "$RAW" | grep -F -e "$validation")
+                
+                if [ -n "$FOUND" ]; then
+                    line_parts+=("$ns [\e[1;32mOK\e[0m]")
+                elif [ -n "$SUB" ]; then
+                    line_parts+=("$ns [\e[1;33mLEERZEICHEN!\e[0m]")
+                    all_ns_ok=false
+                    has_whitespace=true
+                else
+                    line_parts+=("$ns [\e[1;31mFEHLT\e[0m]")
+                    all_ns_ok=false
+                fi
+            done
             
-            count=${checks_count[$validation]:-0}
-            checks_count[$validation]=$((count + 1))
-            new_count=$((count + 1))
-            pos=$((count % 10))
-            
-            # Verlauf speichern
-            if [ -n "$G_FOUND" ]; then history_g["$validation,$pos"]=1; else history_g["$validation,$pos"]=0; fi
-            if [ -n "$C_FOUND" ]; then history_c["$validation,$pos"]=1; else history_c["$validation,$pos"]=0; fi
-            if [ -n "$O_FOUND" ]; then history_o["$validation,$pos"]=1; else history_o["$validation,$pos"]=0; fi
-            
-            # Warnung bei Verzögerung (nach 60 Checks / ca. 10 Min.)
-            if [ "$new_count" -eq 60 ]; then
+            # Baue Status-Zeile für alle Nameserver dieser Domain zusammen
+            joined_status=""
+            for part in "${line_parts[@]}"; do
+                if [ -z "$joined_status" ]; then
+                    joined_status="$part"
+                else
+                    joined_status="$joined_status | $part"
+                fi
+            done
+            ns_status_line["$validation"]="$joined_status"
+
+            # Einmalige sofortige Warnung ausgeben, falls ein Leerzeichen im TXT-Record erkannt wurde
+            if [ "$has_whitespace" = true ] && [ -z "${whitespace_warned[$validation]}" ]; then
                 val_short="${validation:0:8}..."
-                perm_messages+=("\e[1;33m⚠ WARNUNG: Der Eintrag für '_acme-challenge.$domain' (Wert: $val_short) ist seit 10 Minuten (60 Checks) nicht auffindbar!\e[0m")
-                perm_messages+=("\e[1;33mBitte prüfe, ob du den Eintrag bei deinem Provider eventuell überschrieben oder nicht korrekt gespeichert hast.\e[0m")
-                perm_messages+=("\e[1;33mBei Wildcard-Zertifikaten müssen BEIDE TXT-Einträge gleichzeitig unter dem Namen '_acme-challenge.$domain' aktiv sein!\e[0m")
+                perm_messages+=("\e[1;31m⚠ ACHTUNG: Der TXT-Eintrag für '_acme-challenge.$domain' (Wert: $val_short) enthält führende oder nachgestellte Leerzeichen!\e[0m")
+                perm_messages+=("\e[1;33m  Bitte entferne das Leerzeichen jetzt direkt bei deinem DNS-Provider (das Skript wartet automatisch weiter).\e[0m")
+                whitespace_warned[$validation]=1
             fi
             
-            # Timeout (nach 90 Checks / ca. 15 Min.)
-            if [ "$new_count" -ge 90 ]; then
+            count=${checks_count[$validation]:-0}
+            new_count=$((count + 1))
+            checks_count[$validation]=$new_count
+            
+            # Zähle aufeinanderfolgende erfolgreiche Checks (alle autoritativen NS müssen gleichzeitig OK sein)
+            if [ "$all_ns_ok" = true ]; then
+                cur_streak=${streak[$validation]:-0}
+                cur_streak=$((cur_streak + 1))
+                streak[$validation]=$cur_streak
+            else
+                streak[$validation]=0
+                cur_streak=0
+            fi
+            
+            # Sobald REQUIRED_STREAK (3) Checks in Folge auf allen Nameservern OK sind -> Sofort fertig!
+            if [ "$cur_streak" -ge "$REQUIRED_STREAK" ]; then
+                perm_messages+=("\e[1;32m[+] VERIFIZIERT (${REQUIRED_STREAK}/${REQUIRED_STREAK} Checks auf allen Nameservern OK): _acme-challenge.$domain -> $validation\e[0m")
+                completed[$validation]=1
+                continue
+            fi
+            
+            # Hinweis bei längerer Wartezeit (nach 120 Checks / ca. 10 Min.)
+            if [ "$new_count" -eq 120 ]; then
+                val_short="${validation:0:8}..."
+                perm_messages+=("\e[1;33m⚠ HINWEIS: Der Eintrag für '_acme-challenge.$domain' (Wert: $val_short) ist seit ca. 10 Minuten noch nicht sichtbar.\e[0m")
+                perm_messages+=("\e[1;33m  Bitte prüfe, ob du bei deinem Provider auf 'Update'/'Speichern' geklickt hast (das Skript wartet weiter).\e[0m")
+            fi
+            
+            # Sicherheits-Timeout erst nach MAX_CHECKS (360 Checks = ca. 30-35 Min.)
+            if [ "$new_count" -ge "$MAX_CHECKS" ]; then
                 if [ "$is_first_iteration" = false ]; then
                     echo -ne "\e[${BLOCK_HEIGHT}A\e[J"
                 fi
                 for msg in "${perm_messages[@]}"; do
                     echo -e "$msg"
                 done
-                echo -e "\n\e[1;31m❌ FEHLER: Timeout nach 90 Prüfungen (15 Min.) für '_acme-challenge.$domain' erreicht!\e[0m"
+                echo -e "\n\e[1;31m❌ FEHLER: Maximale Wartezeit ($MAX_CHECKS Prüfungen) für '_acme-challenge.$domain' überschritten!\e[0m"
                 echo -e "\e[1;31mProzess abgebrochen. Bitte korrigiere die DNS-Einträge und starte das Skript neu.\e[0m"
                 exit 3
-            fi
-            
-            # Stabilitätsprüfung
-            if [ "$new_count" -ge 10 ]; then
-                sum_g=0
-                sum_c=0
-                sum_o=0
-                for i in {0..9}; do
-                    sum_g=$((sum_g + ${history_g["$validation,$i"]:-0}))
-                    sum_c=$((sum_c + ${history_c["$validation,$i"]:-0}))
-                    sum_o=$((sum_o + ${history_o["$validation,$i"]:-0}))
-                done
-                
-                if [ "$sum_g" -ge 9 ] && [ "$sum_c" -ge 9 ] && [ "$sum_o" -ge 9 ]; then
-                    perm_messages+=("\e[1;32m[+] STABIL GEFUNDEN (>=90%): $domain -> $validation\e[0m")
-                    completed[$validation]=1
-                fi
             fi
         fi
     done
@@ -190,17 +238,17 @@ while true; do
             echo -e "$msg"
         done
         
-        echo -e "\e[1;35m>>> ALLE KEYS WURDEN WELTWEIT VERIFIZIERT! <<<\e[0m"
-        echo "Warte noch 20 Sekunden Puffer wegen DNS-Caching..."
-        for i in {1..20}; do
-            echo -n "#"
+        echo -e "\e[1;35m>>> ALLE KEYS WURDEN AUF DEN AUTORITATIVEN NAMESERVERN VERIFIZIERT! <<<\e[0m"
+        echo -n "Starte Zertifikatsausstellung in 3 Sekunden "
+        for i in {1..3}; do
+            echo -n "."
             sleep 1
         done
         echo -e "\n\e[1;32mGebe grünes Licht an Certbot für die Ausstellung...\e[0m"
         exit 0
     else
-        # 10 Sekunden Wartezeit mit sekündlicher Aktualisierung des Spinners und Countdowns
-        for s in {10..1}; do
+        # 5 Sekunden Wartezeit zwischen den Checks mit sekündlicher Aktualisierung
+        for ((s=CHECK_INTERVAL; s>=1; s--)); do
             sleep 1
             spinner_idx=$((spinner_idx + 1))
             sp="${spinner[$((spinner_idx % ${#spinner[@]}))]}"

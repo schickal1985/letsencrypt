@@ -1,6 +1,6 @@
 #!/bin/bash
-# Hauptskript zum Erneuern/Holen von Let's Encrypt Zertifikaten (SEQUENTIELLE VERSION / LÖSUNG C)
-# Version: 1.9.5
+# Hauptskript zum Erneuern/Holen von Let's Encrypt Zertifikaten (SEQUENTIELLE VERSION / ROOT + WWW)
+# Version: 2.0.0
 
 # Prüfe auf Root Rechte
 if [ "$EUID" -ne 0 ]; then
@@ -66,49 +66,76 @@ trap cleanup EXIT INT TERM
 export WORK_DIR
 export CHECK_LIST_FILE="$WORK_DIR/certbot_check_list.txt"
 
-# Array für Domains und ihr Zertifikat-Modus (0=Root, 1=Nur Wildcard, 2=Root+www, 3=Wildcard+Root)
-DOMAINS=()
-WILDCARDS=()
-
-ask_cert_mode() {
+# Deaktiviert evtl. gecachte ACME-Autorisierungen auf dem Let's Encrypt Server,
+# damit Let's Encrypt IMMER komplett bei Null startet und zuverlässig BEIDE TXT-Codes neu anfordert.
+deactivate_cached_authz() {
     local dom="$1"
-    # Alle Anzeige-Ausgaben gehen direkt ans Terminal (nicht stdout!)
-    # Damit landet nur die gewählte Zahl (0/1/2/3) in der Variable
-    echo -e "\nWelches Zertifikat soll für \e[1;36m$dom\e[0m ausgestellt werden?" > /dev/tty
-    echo -e "  \e[1;32m[1]\e[0m Nur Root-Domain          → $dom                       \e[2m(1 TXT-Eintrag)\e[0m" > /dev/tty
-    echo -e "  \e[1;32m[2]\e[0m Nur Wildcard-Domain      → *.$dom                     \e[2m(1 TXT-Eintrag, deckt www.$dom ab, aber NICHT $dom)\e[0m" > /dev/tty
-    echo -e "  \e[1;33m[3]\e[0m Root + www                → $dom + www.$dom            \e[2m(2 TXT-Einträge)\e[0m" > /dev/tty
-    echo -e "  \e[1;35m[4]\e[0m Wildcard + Root (empf.)   → *.$dom + $dom              \e[2m(2 TXT-Einträge, alles abgedeckt)\e[0m" > /dev/tty
-    while true; do
-        read -p "Auswahl [1/2/3/4]: " MODE_CHOICE < /dev/tty
-        case "$MODE_CHOICE" in
-            1) echo 0; return ;;
-            2) echo 1; return ;;
-            3) echo 2; return ;;
-            4) echo 3; return ;;
-            *) echo -e "\e[1;31mBitte 1, 2, 3 oder 4 eingeben.\e[0m" > /dev/tty ;;
-        esac
-    done
+    echo -e "\e[1;34m[Reset] Setze evtl. gecachte Let's Encrypt Prüfungen für $dom & www.$dom zurück...\e[0m"
+    python3 - "$dom" << 'PYEOF' 2>/dev/null
+import glob, sys
+try:
+    import josepy as jose
+    from acme import client, messages, crypto_util
+    from OpenSSL import crypto
+
+    dom = sys.argv[1]
+    domains = [dom, f"www.{dom}"]
+    deactivated = 0
+    for acc_dir in glob.glob("/etc/letsencrypt/accounts/acme-v02.api.letsencrypt.org/directory/*"):
+        try:
+            with open(f"{acc_dir}/private_key.json", "rb") as f:
+                key = jose.JWK.json_loads(f.read())
+            with open(f"{acc_dir}/regr.json", "r") as f:
+                regr = messages.RegistrationResource.json_loads(f.read())
+            net = client.ClientNetwork(key, account=regr)
+            directory = messages.Directory.from_json(net.get("https://acme-v02.api.letsencrypt.org/directory").json())
+            acme_client = client.ClientV2(directory, net)
+            pkey = crypto.PKey()
+            pkey.generate_key(crypto.TYPE_RSA, 2048)
+            csr_pem = crypto_util.make_csr(crypto.dump_privatekey(crypto.FILETYPE_PEM, pkey), domains)
+            order = acme_client.new_order(csr_pem)
+            for authzr in order.authorizations:
+                if authzr.body.status == messages.STATUS_VALID:
+                    acme_client.deactivate_authorization(authzr)
+                    deactivated += 1
+        except Exception:
+            pass
+    if deactivated > 0:
+        print(f"  -> {deactivated} gecachte Freigabe(n) deaktiviert (erzwinge 2 komplett neue TXT-Codes).")
+except Exception:
+    pass
+PYEOF
 }
 
-read -p "Gib eine domain ein. " FIRST_DOMAIN
+# Array für Domains (immer fest im Modus: Root + www)
+DOMAINS=()
+
+echo -e "\e[1;36m========================================================\e[0m"
+echo -e "\e[1;36m Certbot DNS-Assistent (Modus: Root + www -> 2 Codes)   \e[0m"
+echo -e "\e[1;36m========================================================\e[0m"
+
+read -p "Gib eine Domain ein (z.B. mikrobiom-und-gesundheit.de): " FIRST_DOMAIN
+FIRST_DOMAIN="${FIRST_DOMAIN#www.}"
+FIRST_DOMAIN="${FIRST_DOMAIN// /}"
 if [ -z "$FIRST_DOMAIN" ]; then
-    echo "Keine Domains eingegeben. Skript wird beendet."
+    echo "Keine Domain eingegeben. Skript wird beendet."
     exit 1
 fi
 DOMAINS+=("$FIRST_DOMAIN")
-WILDCARDS+=("$(ask_cert_mode "$FIRST_DOMAIN")")
+echo -e "  \e[1;32m✓ Aufgenommen:\e[0m $FIRST_DOMAIN + www.$FIRST_DOMAIN \e[2m(2 TXT-Codes)\e[0m"
 
 while true; do
     echo ""
-    read -p "Gib eine weitere domain ein. (Oder drücke Enter zum Starten) " NEXT_DOMAIN
+    read -p "Gib eine weitere Domain ein (oder drücke Enter zum Starten): " NEXT_DOMAIN
+    NEXT_DOMAIN="${NEXT_DOMAIN#www.}"
+    NEXT_DOMAIN="${NEXT_DOMAIN// /}"
     
     if [ -z "$NEXT_DOMAIN" ]; then
         echo -e "\nKeine weitere Domain erforderlich. Starte den Prozess..."
         break
     fi
     DOMAINS+=("$NEXT_DOMAIN")
-    WILDCARDS+=("$(ask_cert_mode "$NEXT_DOMAIN")")
+    echo -e "  \e[1;32m✓ Aufgenommen:\e[0m $NEXT_DOMAIN + www.$NEXT_DOMAIN \e[2m(2 TXT-Codes)\e[0m"
 done
 
 
@@ -117,45 +144,27 @@ done
 # ========================================================================
 for i in "${!DOMAINS[@]}"; do
     DOM="${DOMAINS[$i]}"
-    WC="${WILDCARDS[$i]}"
     
     echo -e "\n\e[1;36m========================================================\e[0m"
-    echo -e "\e[1;36m    Beginne isolierten Durchlauf für: $DOM    \e[0m"
+    echo -e "\e[1;36m    Beginne frischen Durchlauf für: $DOM    \e[0m"
     echo -e "\e[1;36m========================================================\e[0m\n"
 
-    # Argumente für exakt DIESE eine Domain bauen
-    CERTBOT_ARGS="certonly --manual --cert-name $DOM --expand"
-    if [ "$WC" -eq 0 ]; then
-        # Modus 1: Nur Root-Domain
-        CERTBOT_ARGS="$CERTBOT_ARGS -d $DOM"
-        echo -e "\e[1;32m>>> Modus: Nur Root-Domain – es wird 1 TXT-Eintrag verlangt. <<<\e[0m"
-        echo ""
-    elif [ "$WC" -eq 1 ]; then
-        # Modus 2: Nur Wildcard-Domain
-        CERTBOT_ARGS="$CERTBOT_ARGS -d *.$DOM"
-        echo -e "\e[1;32m>>> Modus: Nur Wildcard-Domain – es wird 1 TXT-Eintrag verlangt. <<<\e[0m"
-        echo -e "Beachte: Die Root-Domain ($DOM) wird hiermit \e[1;31mNICHT\e[0m geschützt!"
-        echo ""
-    elif [ "$WC" -eq 2 ]; then
-        # Modus 3: Root + www
-        CERTBOT_ARGS="$CERTBOT_ARGS -d $DOM -d www.$DOM"
-        echo -e "\e[1;33m>>> Modus: Root + www – es werden 2 TXT-Einträge verlangt. <<<\e[0m"
-        echo    "Beide haben unterschiedliche Hostnamen: _acme-challenge.$DOM und _acme-challenge.www.$DOM"
-        echo ""
-    else
-        # Modus 4: Wildcard + Root
-        CERTBOT_ARGS="$CERTBOT_ARGS -d *.$DOM -d $DOM"
-        echo -e "\e[1;35m>>> Modus: Wildcard + Root (*.$DOM) – es werden 2 TXT-Einträge verlangt. <<<\e[0m"
-        echo -e "Beide haben den \e[1;31mGLEICHEN Hostnamen\e[0m (_acme-challenge.$DOM), aber unterschiedliche Werte!"
-        echo -e "Trage \e[1;32mbeiden Werte nacheinander\e[0m bei deinem Provider ein (zweimal 'Hinzufügen' klicken)."
-        echo ""
-    fi
+    # Evtl. gecachte Validierungen von vorherigen Versuchen zurücksetzen,
+    # damit IMMER beide TXT-Codes (_acme-challenge.$DOM und _acme-challenge.www.$DOM) neu erstellt werden
+    deactivate_cached_authz "$DOM"
+
+    # Fest eingestellter Modus 3: Root + www (-d $DOM -d www.$DOM) + --force-renewal
+    CERTBOT_ARGS="certonly --manual --cert-name $DOM --expand --force-renewal -d $DOM -d www.$DOM"
+    echo -e "\e[1;33m>>> Modus: Root + www ($DOM + www.$DOM) – es werden immer 2 frische TXT-Einträge verlangt. <<<\e[0m"
+    echo    "Hostnamen: _acme-challenge.$DOM und _acme-challenge.www.$DOM"
+    echo ""
+
     CERTBOT_ARGS="$CERTBOT_ARGS --agree-tos --preferred-challenges dns-01 --server https://acme-v02.api.letsencrypt.org/directory --register-unsafely-without-email --rsa-key-size 4096 --manual-auth-hook $HOOK_SCRIPT --debug-challenges"
     export CERTBOT_ARGS
 
     # Temp-Dateien für die AKTUELLE Domain im isolierten Arbeitsverzeichnis vorbereiten
     rm -f "$CHECK_LIST_FILE"
-    rm -f "$WORK_DIR/certbot_hook_counter_"*
+    rm -f "$WORK_DIR/certbot_hook_counter"*
     touch "$CHECK_LIST_FILE"
 
     # Der intelligente Expect-Wrapper
@@ -185,10 +194,8 @@ expect {
     -re "Press Enter to Continue" {
         # CERTBOT PAUSIERT NUN. ALLE KEYS SIND OBEN SICHTBAR.
         # Wir rufen jetzt unser Bash-Checker-Skript auf,
-        # dieses blockiert so lange, bis Google, Cloudflare und OpenDNS für ALLE Keys grün geben.
+        # dieses blockiert so lange, bis die autoritativen Nameserver für ALLE Keys grün geben.
         
-        # Falls das Checker-Skript mit Fehler beendet wird (z.B. durch Ctrl+C), 
-        # fangen wir das hier auf.
         if {[catch {system "$env(CHECKER_SCRIPT)"} result]} {
             send_user "\n\033\[1;31m\[ABBRUCH\] Checker-Skript wurde abgebrochen.\033\[0m\n"
             exit 2
@@ -199,8 +206,15 @@ expect {
         exp_continue
     }
     eof {
-        # Certbot ist komplett fertig.
-        exit 0
+        # Certbot ist komplett fertig – echten Exit-Code von Certbot ermitteln
+        catch wait result
+        set os_error [lindex $result 2]
+        set exit_code [lindex $result 3]
+        if {$os_error == 0} {
+            exit $exit_code
+        } else {
+            exit 1
+        }
     }
 }
 EOF
@@ -211,11 +225,16 @@ EOF
     EXIT_CODE=$?
 
     if [ $EXIT_CODE -ne 0 ]; then
-        echo -e "\n\e[1;31mDer Prozess für $DOM ist fehlgeschlagen! Breche Gesamtlauf ab.\e[0m"
+        echo -e "\n\e[1;31mDer Prozess für $DOM ist fehlgeschlagen (Exit-Code: $EXIT_CODE)! Breche Gesamtlauf ab.\e[0m"
+        exit 1
+    fi
+
+    if [ ! -s "/etc/letsencrypt/live/$DOM/fullchain.pem" ]; then
+        echo -e "\n\e[1;31mFEHLER: Certbot wurde beendet, aber '/etc/letsencrypt/live/$DOM/fullchain.pem' existiert nicht oder ist leer!\e[0m"
         exit 1
     fi
     
-    echo -e "\n\e[1;32mZertifikat für $DOM erfolgreich bezogen!\e[0m"
+    echo -e "\n\e[1;32mZertifikat für $DOM (inkl. www.$DOM) erfolgreich bezogen!\e[0m"
     sleep 2 # Kurze Pause zur besseren Lesbarkeit bevor die nächste Domain dran ist
 done
 
@@ -273,4 +292,3 @@ for DOM in "${DOMAINS[@]}"; do
     fi
 done
 echo ""
-
